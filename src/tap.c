@@ -1,5 +1,7 @@
 /*-
  * Copyright (c) 2004 Nik Clayton
+ *           (c) 2010 Shlomi Fish
+ *           (c) 2013 Petr Malat
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -45,8 +47,14 @@ static int test_died = 0;
 /* Encapsulate the pthread code in a conditional.  In the absence of
    libpthread the code does nothing */
 #ifdef HAVE_LIBPTHREAD
+#ifdef __linux__
+#define __USE_GNU
 #include <pthread.h>
-static pthread_mutex_t M = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t M = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+#else
+#include <pthread.h>
+static pthread_mutex_t M = PTHREAD_MUTEX_INITIALIZER; /* Mutex is recursive on BSD */
+#endif
 # define LOCK pthread_mutex_lock(&M);
 # define UNLOCK pthread_mutex_unlock(&M);
 #else
@@ -66,8 +74,8 @@ static void _cleanup(void);
  * test_comment -- a comment to print afterwards, may be NULL
  */
 unsigned int
-_gen_result(int ok, const char *func, char *file, unsigned int line, 
-	    char *test_name, ...)
+_gen_result(int ok, const char *func, const char *file, unsigned int line, 
+	    const char *test_name, ...)
 {
 	va_list ap;
 	char *local_test_name = NULL;
@@ -82,7 +90,9 @@ _gen_result(int ok, const char *func, char *file, unsigned int line,
 	   expansions on it */
 	if(test_name != NULL) {
 		va_start(ap, test_name);
-		vasprintf(&local_test_name, test_name, ap);
+		if(vasprintf(&local_test_name, test_name, ap) < 0) {
+			local_test_name = NULL;
+		}
 		va_end(ap);
 
 		/* Make sure the test name contains more than digits
@@ -145,9 +155,9 @@ _gen_result(int ok, const char *func, char *file, unsigned int line,
 	printf("\n");
 
 	if(!ok) {
-		if(getenv("HARNESS_ACTIVE") != NULL)
+		if(getenv("HARNESS_ACTIVE") != NULL) {
 			fputs("\n", stderr);
-
+		}
 		diag("    Failed %stest (%s:%s() at line %d)", 
 		     todo ? "(TODO) " : "", file, func, line);
 	}
@@ -169,6 +179,8 @@ _tap_init(void)
 {
 	static int run_once = 0;
 
+	LOCK;
+
 	if(!run_once) {
 		atexit(_cleanup);
 
@@ -178,6 +190,8 @@ _tap_init(void)
 		setbuf(stdout, 0);
 		run_once = 1;
 	}
+
+	UNLOCK;
 }
 
 /*
@@ -210,7 +224,7 @@ plan_no_plan(void)
  * Note that the plan is to skip all tests
  */
 int
-plan_skip_all(char *reason)
+plan_skip_all(const char *reason)
 {
 
 	LOCK;
@@ -266,9 +280,11 @@ plan_tests(unsigned int tests)
 }
 
 unsigned int
-diag(char *fmt, ...)
+diag(const char *fmt, ...)
 {
 	va_list ap;
+
+	LOCK;
 
 	fputs("# ", stderr);
 
@@ -278,6 +294,8 @@ diag(char *fmt, ...)
 
 	fputs("\n", stderr);
 
+	UNLOCK;
+
 	return 0;
 }
 
@@ -285,12 +303,16 @@ void
 _expected_tests(unsigned int tests)
 {
 
+	LOCK;
+
 	printf("1..%d\n", tests);
 	e_tests = tests;
+
+	UNLOCK;
 }
 
 int
-skip(unsigned int n, char *fmt, ...)
+skip(unsigned int n, const char *fmt, ...)
 {
 	va_list ap;
 	char *skip_msg;
@@ -298,7 +320,9 @@ skip(unsigned int n, char *fmt, ...)
 	LOCK;
 
 	va_start(ap, fmt);
-	asprintf(&skip_msg, fmt, ap);
+	if(vasprintf(&skip_msg, fmt, ap) < 0) {
+		skip_msg = NULL;
+	}
 	va_end(ap);
 
 	while(n-- > 0) {
@@ -316,14 +340,16 @@ skip(unsigned int n, char *fmt, ...)
 }
 
 void
-todo_start(char *fmt, ...)
+todo_start(const char *fmt, ...)
 {
 	va_list ap;
 
 	LOCK;
 
 	va_start(ap, fmt);
-	vasprintf(&todo_msg, fmt, ap);
+	if(vasprintf(&todo_msg, fmt, ap) < 0) {
+		todo_msg = NULL;
+	}
 	va_end(ap);
 
 	todo = 1;

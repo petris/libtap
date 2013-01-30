@@ -1,5 +1,7 @@
 /*-
  * Copyright (c) 2004 Nik Clayton
+ *           (c) 2010 Shlomi Fish
+ *           (c) 2013 Petr Malat
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -24,21 +26,70 @@
  * SUCH DAMAGE.
  */
 
+#ifndef TAP_H
+#define TAP_H
+
 /* '## __VA_ARGS__' is a gcc'ism. C99 doesn't allow the token pasting
    and requires the caller to add the final comma if they've ommitted
    the optional arguments */
 #ifdef __GNUC__
+/**
+ * ok - Conditional test with a name
+ * @e: the expression which we expect to be true.
+ * @...: the printf-style name of the test.
+ *
+ * If the expression is true, the test passes.  The name of the test will be
+ * the filename, line number, and the printf-style string.  This can be clearer
+ * than simply the expression itself.
+ *
+ * Example:
+ *	ok1(init_subsystem() == 1);
+ *	ok(init_subsystem() == 0, "Second initialization should fail");
+ */
 # define ok(e, test, ...) ((e) ?					\
 			   _gen_result(1, __func__, __FILE__, __LINE__,	\
 				       test, ## __VA_ARGS__) :		\
 			   _gen_result(0, __func__, __FILE__, __LINE__,	\
 				       test, ## __VA_ARGS__))
 
+/**
+ * ok1 - Simple conditional test
+ * @e: the expression which we expect to be true.
+ *
+ * This is the simplest kind of test: if the expression is true, the
+ * test passes.  The name of the test which is printed will simply be
+ * file name, line number, and the expression itself.
+ *
+ * Example:
+ *	ok1(init_subsystem() == 1);
+ */
 # define ok1(e) ((e) ?							\
 		 _gen_result(1, __func__, __FILE__, __LINE__, "%s", #e) : \
 		 _gen_result(0, __func__, __FILE__, __LINE__, "%s", #e))
 
+/**
+ * pass - Note that a test passed
+ * @...: the printf-style name of the test.
+ *
+ * For complicated code paths, it can be easiest to simply call pass() in one
+ * branch and fail() in another.
+ *
+ * Example:
+ *	x = do_something();
+ *	if (!checkable(x) || check_value(x))
+ *		pass("do_something() returned a valid value");
+ *	else		
+ *		fail("do_something() returned an invalid value");
+ */
 # define pass(test, ...) ok(1, test, ## __VA_ARGS__);
+
+/**
+ * fail - Note that a test failed
+ * @...: the printf-style name of the test.
+ *
+ * For complicated code paths, it can be easiest to simply call pass() in one
+ * branch and fail() in another.
+ */
 # define fail(test, ...) ok(0, test, ## __VA_ARGS__);
 
 # define skip_start(test, n, fmt, ...)			\
@@ -73,17 +124,138 @@
 
 #define skip_end() } while(0);
 
-unsigned int _gen_result(int, const char *, char *, unsigned int, char *, ...);
+unsigned int _gen_result(int, const char *, const char *, 
+		unsigned int, const char *, ...);
 
+/**
+ * plan_no_plan - I have no idea how many tests I'm going to run.
+ *
+ * In some situations you may not know how many tests you will be running, or
+ * you are developing your test program, and do not want to update the
+ * plan_tests() call every time you make a change.  For those situations use
+ * plan_no_plan() instead of plan_tests().  It indicates to the test harness
+ * that an indeterminate number of tests will be run.
+ *
+ * Remember, if you fail to plan, you plan to fail.
+ *
+ * Example:
+ *	plan_no_plan();
+ *	while (random() % 2)
+ *		ok1(some_test());
+ *	exit(exit_status());
+ */
 int plan_no_plan(void);
-int plan_skip_all(char *);
+
+/**
+ * plan_skip_all - Indicate that you will skip all tests.
+ * @reason: the string indicating why you can't run any tests.
+ *
+ * If your test program detects at run time that some required functionality
+ * is missing (for example, it relies on a database connection which is not
+ * present, or a particular configuration option that has not been included
+ * in the running kernel) use plan_skip_all() instead of plan_tests().
+ *
+ * Example:
+ *	if (!have_some_feature) {
+ *		plan_skip_all("Need some_feature support");
+ *		exit(exit_status());
+ *	}
+ *	plan_tests(13);
+ */
+int plan_skip_all(const char *);
+
+/**
+ * plan_tests - announce the number of tests you plan to run
+ * @tests: the number of tests
+ *
+ * This should be the first call in your test program: it allows tracing
+ * of failures which mean that not all tests are run.
+ *
+ * If you don't know how many tests will actually be run, assume all of them
+ * and use skip() if you don't actually run some tests.
+ *
+ * Example:
+ *	plan_tests(13);
+ */
 int plan_tests(unsigned int);
 
-unsigned int diag(char *, ...);
+/**
+ * diag - print a diagnostic message (use instead of printf/fprintf)
+ * @fmt: the format of the printf-style message
+ *
+ * diag ensures that the output will not be considered to be a test
+ * result by the TAP test harness.  It will append '\n' for you.
+ *
+ * Example:
+ *	diag("Now running complex tests");
+ */
+unsigned int diag(const char *, ...);
 
-int skip(unsigned int, char *, ...);
+/**
+ * skip - print a diagnostic message (use instead of printf/fprintf)
+ * @n: number of tests you're skipping.
+ * @fmt: the format of the reason you're skipping the tests.
+ *
+ * Sometimes tests cannot be run because the test system lacks some feature:
+ * you should explicitly document that you're skipping tests using skip().
+ *
+ * From the Test::More documentation:
+ *   If it's something the user might not be able to do, use SKIP.  This
+ *   includes optional modules that aren't installed, running under an OS that
+ *   doesn't have some feature (like fork() or symlinks), or maybe you need an
+ *   Internet connection and one isn't available.
+ *
+ * Example:
+ *	#ifdef HAVE_SOME_FEATURE
+ *	ok1(test_some_feature());
+ *	#else
+ *	skip(1, "Don't have SOME_FEATURE");
+ *	#endif
+ */
+int skip(unsigned int, const char *, ...);
 
-void todo_start(char *, ...);
+/**
+ * todo_start - mark tests that you expect to fail.
+ * @fmt: the reason they currently fail.
+ *
+ * It's extremely useful to write tests before you implement the matching fix
+ * or features: surround these tests by todo_start()/todo_end().  These tests
+ * will still be run, but with additional output that indicates that they are
+ * expected to fail.
+ *
+ * This way, should a test start to succeed unexpectedly, tools like prove(1)
+ * will indicate this and you can move the test out of the todo block.  This
+ * is much more useful than simply commenting out (or '#if 0') the tests.
+ * 
+ * From the Test::More documentation:
+ *   If it's something the programmer hasn't done yet, use TODO.  This is for
+ *   any code you haven't written yet, or bugs you have yet to fix, but want to
+ *   put tests in your testing script (always a good idea).
+ *
+ * Example:
+ *	todo_start("dwim() not returning true yet");
+ *	ok(dwim(), "Did what the user wanted");
+ *	todo_end();
+ */
+void todo_start(const char *, ...);
+
+/**
+ * todo_end - end of tests you expect to fail.
+ *
+ * See todo_start().
+ */
 void todo_end(void);
 
+/**
+ * exit_status - the value that main should return.
+ *
+ * For maximum compatability your test program should return a particular exit
+ * code (ie. 0 if all tests were run, and every test which was expected to
+ * succeed succeeded).
+ *
+ * Example:
+ *	exit(exit_status());
+ */
 int exit_status(void);
+
+#endif /* TAP_H */
